@@ -18,6 +18,98 @@
 
 namespace basalt::platform {
 
+namespace detail {
+
+CpuTopology classify_cpus(const std::vector<CpuRecord>& cpus, bool skip_first, CpuAffinity affinity) {
+    CpuTopology topo;
+    struct Cpu {
+        CpuRecord rec;
+        bool is_sibling = false;
+    };
+    std::vector<Cpu> all_cpus;
+    std::vector<std::pair<long, long>> seen_phys;
+    long max_cap = 0, min_cap = 1000000;
+
+    for (const CpuRecord& r : cpus) {
+        Cpu c;
+        c.rec = r;
+        if (r.cap > 0) {
+            max_cap = (std::max)(max_cap, r.cap);
+            min_cap = (std::min)(min_cap, r.cap);
+        }
+        if (r.pkg >= 0 && r.core >= 0) {
+            const std::pair<long, long> key{r.pkg, r.core};
+            if (std::find(seen_phys.begin(), seen_phys.end(), key) != seen_phys.end()) {
+                c.is_sibling = true;
+            } else {
+                seen_phys.push_back(key);
+            }
+        }
+        all_cpus.push_back(c);
+    }
+
+    // The scheduler ranks a few favoured cores a little above the other performance cores, and efficiency cores well
+    // below them: a processor within a tenth of the top capacity is a performance core.
+    const long p_floor = max_cap - max_cap / 10;
+    auto is_p = [&](const Cpu& c) { return c.rec.cap >= p_floor; };
+    topo.is_hybrid = (max_cap > 0 && min_cap < p_floor);
+    if (topo.is_hybrid) {
+        for (const auto& c : all_cpus) {
+            if (is_p(c)) {
+                if (!c.is_sibling) topo.p_cores++;
+                topo.p_threads++;
+            } else {
+                if (!c.is_sibling) topo.e_cores++;
+            }
+        }
+    } else {
+        topo.p_cores = (int) seen_phys.size();
+        topo.p_threads = (int) all_cpus.size();
+    }
+
+    if (affinity == CpuAffinity::All || !topo.is_hybrid) {
+        if (topo.is_hybrid)
+            std::stable_sort(all_cpus.begin(), all_cpus.end(),
+                             [](const Cpu& x, const Cpu& y) { return x.rec.cap > y.rec.cap; });
+        for (const auto& c : all_cpus) {
+            if (!c.is_sibling) topo.worker_cores.push_back(c.rec.cpu);
+        }
+        if (skip_first && !topo.worker_cores.empty()) {
+            topo.host_core = topo.worker_cores.front();
+            topo.worker_cores.erase(topo.worker_cores.begin());
+        }
+        return topo;
+    }
+
+    // Hybrid CPU:
+    std::vector<int> p_primaries;
+    std::vector<int> p_siblings;
+    std::vector<int> e_cores;
+
+    for (const auto& c : all_cpus) {
+        if (is_p(c)) {
+            if (!c.is_sibling) p_primaries.push_back(c.rec.cpu);
+            else p_siblings.push_back(c.rec.cpu);
+        } else {
+            e_cores.push_back(c.rec.cpu);
+        }
+    }
+
+    if (skip_first && !p_primaries.empty()) {
+        topo.host_core = p_primaries.front();
+        p_primaries.erase(p_primaries.begin());
+    }
+
+    for (int cpu : p_primaries) topo.worker_cores.push_back(cpu);
+    for (int cpu : p_siblings) topo.worker_cores.push_back(cpu);
+    if (affinity != CpuAffinity::PCores) {
+        for (int cpu : e_cores) topo.worker_cores.push_back(cpu);
+    }
+    return topo;
+}
+
+}  // namespace detail
+
 #if defined(_WIN32)
 // --------------------------------------------------------------------------------------------- Windows
 
@@ -138,24 +230,13 @@ CpuTopology detect_cpu_topology(bool skip_first, CpuAffinity affinity) {
 // --------------------------------------------------------------------------------------------- Linux
 
 CpuTopology detect_cpu_topology(bool skip_first, CpuAffinity affinity) {
-    CpuTopology topo;
     // The logical CPUs this process may run on, ONE PER PHYSICAL CORE: SMT siblings share a core's load/store
     // bandwidth, so a worker on each would put two workers on one core.  sysfs names each CPU's (package, core); the
     // first allowed CPU of each pair is kept, so a taskset that leaves out the first sibling still gets its core.
     // Without sysfs every allowed CPU counts.
-    auto topo_read = [](int cpu, const char* what) -> long {
+    auto sysfs_read = [](int cpu, const char* what) -> long {
         char path[96];
-        std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/topology/%s", cpu, what);
-        long v = -1;
-        if (std::FILE* f = std::fopen(path, "r")) {
-            if (std::fscanf(f, "%ld", &v) != 1) v = -1;
-            std::fclose(f);
-        }
-        return v;
-    };
-    auto cap_read = [](int cpu) -> long {
-        char path[96];
-        std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpu_capacity", cpu);
+        std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/%s", cpu, what);
         long v = -1;
         if (std::FILE* f = std::fopen(path, "r")) {
             if (std::fscanf(f, "%ld", &v) != 1) v = -1;
@@ -170,92 +251,16 @@ CpuTopology detect_cpu_topology(bool skip_first, CpuAffinity affinity) {
         for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i) allowed.push_back((int) i);
     }
 
-    struct CoreLinux {
-        int cpu = -1;
-        long pkg = -1;
-        long core = -1;
-        long cap = -1;
-        bool is_sibling = false;
-    };
-    std::vector<CoreLinux> all_cpus;
-    std::vector<std::pair<long, long>> seen_phys;
-    long max_cap = 0, min_cap = 1000000;
-
+    std::vector<detail::CpuRecord> cpus;
     for (int cpu : allowed) {
-        CoreLinux cl;
-        cl.cpu = cpu;
-        cl.pkg = topo_read(cpu, "physical_package_id");
-        cl.core = topo_read(cpu, "core_id");
-        cl.cap = cap_read(cpu);
-        if (cl.cap > 0) {
-            max_cap = (std::max)(max_cap, cl.cap);
-            min_cap = (std::min)(min_cap, cl.cap);
-        }
-        if (cl.pkg >= 0 && cl.core >= 0) {
-            const std::pair<long, long> key{cl.pkg, cl.core};
-            if (std::find(seen_phys.begin(), seen_phys.end(), key) != seen_phys.end()) {
-                cl.is_sibling = true;
-            } else {
-                seen_phys.push_back(key);
-            }
-        }
-        all_cpus.push_back(cl);
+        detail::CpuRecord r;
+        r.cpu = cpu;
+        r.pkg = sysfs_read(cpu, "topology/physical_package_id");
+        r.core = sysfs_read(cpu, "topology/core_id");
+        r.cap = sysfs_read(cpu, "cpu_capacity");
+        cpus.push_back(r);
     }
-
-    topo.is_hybrid = (max_cap > 0 && max_cap > min_cap);
-    if (topo.is_hybrid) {
-        for (const auto& cl : all_cpus) {
-            if (cl.cap == max_cap) {
-                if (!cl.is_sibling) topo.p_cores++;
-                topo.p_threads++;
-            } else {
-                if (!cl.is_sibling) topo.e_cores++;
-            }
-        }
-    } else {
-        topo.p_cores = (int) seen_phys.size();
-        topo.p_threads = (int) all_cpus.size();
-    }
-
-    if (affinity == CpuAffinity::All || !topo.is_hybrid) {
-        if (topo.is_hybrid)
-            std::stable_sort(all_cpus.begin(), all_cpus.end(),
-                             [](const CoreLinux& x, const CoreLinux& y) { return x.cap > y.cap; });
-        for (const auto& cl : all_cpus) {
-            if (!cl.is_sibling) topo.worker_cores.push_back(cl.cpu);
-        }
-        if (skip_first && !topo.worker_cores.empty()) {
-            topo.host_core = topo.worker_cores.front();
-            topo.worker_cores.erase(topo.worker_cores.begin());
-        }
-        return topo;
-    }
-
-    // Hybrid CPU:
-    std::vector<int> p_primaries;
-    std::vector<int> p_siblings;
-    std::vector<int> e_cores;
-
-    for (const auto& cl : all_cpus) {
-        if (cl.cap == max_cap) {
-            if (!cl.is_sibling) p_primaries.push_back(cl.cpu);
-            else p_siblings.push_back(cl.cpu);
-        } else {
-            e_cores.push_back(cl.cpu);
-        }
-    }
-
-    if (skip_first && !p_primaries.empty()) {
-        topo.host_core = p_primaries.front();
-        p_primaries.erase(p_primaries.begin());
-    }
-
-    for (int cpu : p_primaries) topo.worker_cores.push_back(cpu);
-    for (int cpu : p_siblings) topo.worker_cores.push_back(cpu);
-    if (affinity != CpuAffinity::PCores) {
-        for (int cpu : e_cores) topo.worker_cores.push_back(cpu);
-    }
-    return topo;
+    return detail::classify_cpus(cpus, skip_first, affinity);
 }
 
 #endif

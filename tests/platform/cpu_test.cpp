@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 int failures = 0;
@@ -34,6 +35,50 @@ int main() {
     for (CpuAffinity a : {CpuAffinity::Auto, CpuAffinity::PCores}) {
         const CpuTopology t = detect_cpu_topology(false, a);
         check(!t.worker_cores.empty(), "a hybrid-aware ordering still finds cores");
+    }
+
+    // The classification alone, on described processors.
+    using detail::CpuRecord;
+    using detail::classify_cpus;
+    {
+        // two favoured performance cores ranked a little above six others, sixteen efficiency cores well below
+        std::vector<CpuRecord> cpus;
+        for (int c = 0; c < 24; ++c) cpus.push_back({c, 0, c, c < 2 ? 1024 : c < 8 ? 1012 : 768});
+        const CpuTopology t = classify_cpus(cpus, true, CpuAffinity::Auto);
+        check(t.is_hybrid && t.p_cores == 8 && t.p_threads == 8 && t.e_cores == 16,
+              "favoured cores count with the other P-cores");
+        check(t.host_core == 0 && t.worker_cores.size() == 23 && t.worker_cores[6] == 7 && t.worker_cores[7] == 8,
+              "auto: the host on the first P-core, the other P-cores, then the E-cores");
+        const CpuTopology p = classify_cpus(cpus, true, CpuAffinity::PCores);
+        check(p.worker_cores.size() == 7 && p.worker_cores.back() == 7, "p-cores: the seven other P-cores only");
+        const CpuTopology a = classify_cpus(cpus, true, CpuAffinity::All);
+        check(a.host_core == 0 && a.worker_cores.size() == 23 && a.worker_cores.front() == 1,
+              "all: every core, in capacity order");
+    }
+    {
+        // SMT performance cores (siblings 8 apart) beside single-thread efficiency cores
+        std::vector<CpuRecord> cpus;
+        for (int c = 0; c < 16; ++c) cpus.push_back({c, 0, c % 8, c % 8 < 2 ? 1024 : 990});
+        for (int c = 16; c < 24; ++c) cpus.push_back({c, 0, c, 640});
+        const CpuTopology t = classify_cpus(cpus, false, CpuAffinity::Auto);
+        check(t.is_hybrid && t.p_cores == 8 && t.p_threads == 16 && t.e_cores == 8, "SMT P-cores: cores and threads");
+        check(t.worker_cores.size() == 24 && t.worker_cores[7] == 7 && t.worker_cores[8] == 8 &&
+                  t.worker_cores[16] == 16,
+              "auto: P-core primaries, then their siblings, then the E-cores");
+    }
+    {
+        // capacities that differ only within the performance band: not hybrid, every core a worker
+        std::vector<CpuRecord> cpus;
+        for (int c = 0; c < 16; ++c) cpus.push_back({c, 0, c, c < 2 ? 1024 : 1000});
+        const CpuTopology t = classify_cpus(cpus, true, CpuAffinity::Auto);
+        check(!t.is_hybrid && t.p_cores == 16 && t.worker_cores.size() == 15, "favoured cores alone are not hybrid");
+    }
+    {
+        // no capacities at all
+        std::vector<CpuRecord> cpus;
+        for (int c = 0; c < 8; ++c) cpus.push_back({c, 0, c, -1});
+        const CpuTopology t = classify_cpus(cpus, false, CpuAffinity::Auto);
+        check(!t.is_hybrid && t.p_cores == 8 && t.worker_cores.size() == 8, "no capacities: one worker per core");
     }
 
     return failures ? 1 : 0;

@@ -28,4 +28,20 @@ struct CpuTopology {
 /// ordered for `affinity`. `skip_first` takes the first one out of `worker_cores` and names it `host_core`.
 CpuTopology detect_cpu_topology(bool skip_first, CpuAffinity affinity = CpuAffinity::All);
 
+namespace detail {
+
+/// One logical processor as the OS describes it: its package and core (-1 when unknown) and its scheduler capacity
+/// (-1 when the OS gives none).
+struct CpuRecord {
+    int cpu = -1;
+    long pkg = -1;
+    long core = -1;
+    long cap = -1;
+};
+
+/// The topology of `cpus`, given in the OS's order: the classification detect_cpu_topology applies on Linux.
+CpuTopology classify_cpus(const std::vector<CpuRecord>& cpus, bool skip_first, CpuAffinity affinity);
+
+}  // namespace detail
+
 }  // namespace basalt::platform
