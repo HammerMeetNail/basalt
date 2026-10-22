@@ -1416,6 +1416,7 @@ struct DmTmaShared {
 };
 
 __device__ __forceinline__ uint32_t dm_smem(const void* p) { return (uint32_t) __cvta_generic_to_shared(p); }
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 900
 __device__ __forceinline__ void dm_bulk(void* dst, const void* src, uint32_t bytes, unsigned long long* bar) {
     asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" :: "r"(dm_smem(bar)), "r"(bytes) : "memory");
     asm volatile("cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];"
@@ -1427,6 +1428,10 @@ __device__ __forceinline__ void dm_bar_wait(unsigned long long* bar, uint32_t pa
         asm volatile("{ .reg .pred p; mbarrier.try_wait.parity.shared::cta.b64 p, [%1], %2; selp.u32 %0, 1, 0, p; }"
                      : "=r"(ok) : "r"(dm_smem(bar)), "r"(parity) : "memory");
 }
+#else   // the TMA decode tail needs sm_90+; it never runs on an older peer card
+__device__ __forceinline__ void dm_bulk(void*, const void*, uint32_t, unsigned long long*) { __trap(); }
+__device__ __forceinline__ void dm_bar_wait(unsigned long long*, uint32_t) { __trap(); }
+#endif
 
 // sm's groups (ng, start, gptr, tok, dst set) through the bulk-copy pipeline: block b of nb takes items b, b + nb, ...
 // (gate/up items of 8 rows, then down items of 32 rows); `base` counts the block's earlier items on these barriers
@@ -1506,11 +1511,15 @@ __device__ int dm_experts_tma(DmTmaShared& sm, int ng, const block_q8_1* __restr
 }
 
 __device__ __forceinline__ void dm_bars_init(DmTmaShared& sm) {
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 900
     if (threadIdx.x == 0) {
         for (int i = 0; i < kTmaStages; ++i)
             asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" :: "r"(dm_smem(&sm.bar[i])) : "memory");
         asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
     }
+#else
+    __trap();
+#endif
 }
 
 template<int TG, int TD>

@@ -291,6 +291,13 @@ set_source_files_properties(src/kernels/cuda/native_mmvq.cu src/kernels/cuda/nat
     src/kernels/cuda/q5k_head.cu
     src/kernels/cuda/q6k_head.cu
     PROPERTIES COMPILE_OPTIONS "--use_fast_math")
+# An older helper GPU (as --expert-cache-device1 or --peer-device) runs only the expert kernels
+# below, so only they are also built for BASALT_HELPER_ARCHS (e.g. 89); everything else stays 12.0 only.
+set(BASALT_HELPER_ARCHS "" CACHE STRING "extra CUDA architectures for the helper-GPU expert kernels, e.g. 89")
+foreach(_h IN LISTS BASALT_HELPER_ARCHS)
+  set_property(SOURCE src/kernels/cuda/iq_kernels.cu src/kernels/cuda/elementwise.cu src/core/remote_expert_opt.cu
+               APPEND PROPERTY COMPILE_OPTIONS "--generate-code=arch=compute_${_h},code=sm_${_h}")
+endforeach()
 
 # ---- engine -----------------------------------------------------
 # The COMPOSED layer lives here and not in `core`, because it calls kernels and `kernels`
