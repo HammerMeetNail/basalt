@@ -369,6 +369,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="the mock engine's answer (default: a short greeting); given more than once, requests get "
                          "them in turn and the last one repeats")
     ap.add_argument("--port", type=int, default=8080, help="the TCP port to listen on (default 8080)")
+    ap.add_argument("--listen-fd", type=int, default=None, metavar="FD",
+                    help="serve on the listening TCP socket already open on this descriptor, as systemd socket "
+                         "activation passes one (3); its address replaces --host and --port")
     ap.add_argument("--gpu", help="the GPUs to use, as nvidia-smi numbers them: exactly these, the first is the main "
                                   "card and the engine gives the rest their roles (\"0,1\"); auto = every Blackwell "
                                   "card, the fastest as main (default: GPU 0 alone)")

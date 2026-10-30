@@ -744,9 +744,35 @@ class Server(ThreadingHTTPServer):
             super().handle_error(request, client_address)
 
 
-def serve(svc: Service, host="127.0.0.1", port=8080) -> ThreadingHTTPServer:
+def _listening(sock: socket.socket) -> bool:
+    try:
+        return bool(sock.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN))
+    except OSError:                     # not readable on every system: trust the socket there
+        return True
+
+
+def listen_socket(fd: int) -> socket.socket:
+    """The listening TCP socket already open on descriptor `fd` (--listen-fd), as systemd socket activation passes
+    one. ValueError when the descriptor holds something else."""
+    try:
+        sock = socket.socket(fileno=fd)
+    except OSError as e:
+        raise ValueError(f"--listen-fd {fd}: not a socket ({e.strerror or e})") from None
+    if sock.family not in (socket.AF_INET, socket.AF_INET6) or sock.type != socket.SOCK_STREAM or not _listening(sock):
+        sock.detach()
+        raise ValueError(f"--listen-fd {fd}: not a listening TCP socket")
+    return sock
+
+
+def serve(svc: Service, host="127.0.0.1", port=8080, sock: socket.socket | None = None) -> ThreadingHTTPServer:
+    """Serves on `sock` when one is given (bound and listening already), else on a socket bound to `host`:`port`."""
     svc.host_names = host_names_for(host, svc.allowed_hosts, svc.trusted_origins)
     svc.start_telemetry()
-    httpd = Server((host, port), make_handler(svc))
+    if sock is None:
+        httpd = Server((host, port), make_handler(svc))
+    else:
+        httpd = Server((host, port), make_handler(svc), bind_and_activate=False)
+        httpd.socket.close()
+        httpd.socket, httpd.server_address = sock, sock.getsockname()
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
