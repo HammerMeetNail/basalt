@@ -93,6 +93,7 @@ Server options. Command line `--name`, config `server` block `"name"`.
 | `alias` | string | the name stored in the model file | The model name the API reports. Change it when a client expects a particular name. |
 | `host` | address | `127.0.0.1` | The address to listen on. `127.0.0.1` is this machine only; `0.0.0.0` also serves the network. Never listen beyond `127.0.0.1` without `api-key`. |
 | `port` | integer | `8080` | The TCP port. |
+| `listen-fd` | integer | none | Serve on the listening TCP socket already open on this descriptor, as systemd socket activation passes one (`3`). Its address replaces `host` and `port`. |
 | `api-key` | string | none | Require this key on `/v1/*` (`Authorization: Bearer ...` or `x-api-key`). Command line only. Set it whenever `host` is not `127.0.0.1`. |
 | `allowed-host` | string, repeatable | none | Also answer to this `Host` name; `"*"` turns the check off. Needed when clients reach the server by a name other than its address. |
 | `cors-origin` | string, repeatable | none | Let web pages from this origin call `/v1/*`. |
