@@ -100,7 +100,8 @@ def load_config_file(path: str, ap: argparse.ArgumentParser) -> tuple[list[str],
     argv: list[str] = []
     for key in (*sections["server"], *sections["engine"]):
         if re.sub(r"[^a-z]", "", str(key).lower()).startswith("apikey"):
-            raise ValueError("api-key can't be set in a config file; pass --api-key on the command line")
+            raise ValueError("api-key can't be set in a config file; pass --api-key or --api-key-file on the command "
+                             "line")
     for key, value in sections["server"].items():
         name = str(key).strip().lower().replace("_", "-").removeprefix("--")
         act = known.get(name)
@@ -386,6 +387,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--api-key", default="",
                     help="require this key on /v1/* (Authorization: Bearer ... or x-api-key); command line only, "
                          "not allowed in a --config file")
+    ap.add_argument("--api-key-file", default=None, metavar="FILE",
+                    help="like --api-key, with the key read from this file, such as a secret a container runtime or "
+                         "systemd mounts; command line only")
     ap.add_argument("--allowed-host", action="append", default=[], metavar="NAME",
                     help="also answer to this Host name (repeatable; \"*\" turns the check off)")
     ap.add_argument("--cors-origin", action="append", default=[], metavar="ORIGIN",

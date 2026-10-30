@@ -95,6 +95,7 @@ Server options. Command line `--name`, config `server` block `"name"`.
 | `port` | integer | `8080` | The TCP port. |
 | `listen-fd` | integer | none | Serve on the listening TCP socket already open on this descriptor, as systemd socket activation passes one (`3`). Its address replaces `host` and `port`. |
 | `api-key` | string | none | Require this key on `/v1/*` (`Authorization: Bearer ...` or `x-api-key`). Command line only. Set it whenever `host` is not `127.0.0.1`. |
+| `api-key-file` | path | none | Like `api-key`, with the key read from this file, such as a secret a container runtime or systemd mounts. Command line only; give one of the two. |
 | `allowed-host` | string, repeatable | none | Also answer to this `Host` name; `"*"` turns the check off. Needed when clients reach the server by a name other than its address. |
 | `cors-origin` | string, repeatable | none | Let web pages from this origin call `/v1/*`. |
 | `fit-max-tokens` | switch | off | Clamp a request's `max_tokens` to the context that remains instead of rejecting it with 400. |

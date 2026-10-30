@@ -345,7 +345,7 @@ class EveryOption(unittest.TestCase):
         ap = build_parser()
         for name, act in server_options(ap).items():
             # grammar and answer-room are on by default: their no- forms differ (test_grammar, test_answer_room_switch)
-            if name in ("api-key", "engine-bin", "grammar", "answer-room"):
+            if name in ("api-key", "api-key-file", "engine-bin", "grammar", "answer-room"):
                 continue
             v = "localhost" if name == "host" else self.sample(act)
             if isinstance(act, argparse._AppendAction):
