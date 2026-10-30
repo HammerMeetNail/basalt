@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hmac
 import socket
+from pathlib import Path
 
 
 LOOPBACK_NAMES = ("localhost", "127.0.0.1", "::1")
@@ -20,6 +21,20 @@ def api_key_of(value) -> str:
     if key and not key.strip():
         raise ValueError("an API key was given but it is empty")
     return key.strip()
+
+
+def api_key_from_file(path: str) -> str:
+    """The key held in the file at `path` (--api-key-file), such as a secret a container runtime or systemd mounts.
+    ValueError when there is no file to read or it holds no key."""
+    if not str(path).strip():
+        raise ValueError("--api-key-file is empty (give a file, or leave it out)")
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise ValueError(f"--api-key-file {path}: {getattr(e, 'strerror', None) or e}") from None
+    if not text.strip():
+        raise ValueError(f"--api-key-file {path} holds no key")
+    return text
 
 
 def key_matches(given: str, key: str) -> bool:
